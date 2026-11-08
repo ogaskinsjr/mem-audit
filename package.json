@@ -1,0 +1,32 @@
+{
+  "name": "mem-audit",
+  "version": "0.1.0",
+  "description": "Mem-Audit by DocuSOR: audit AI coding-agent memory against the real repo and against itself. Finds stale, contradictory and superseded notes, and what doesn't need to be agent memory at all. Offline, deterministic, zero dependencies.",
+  "type": "module",
+  "bin": {
+    "mem-audit": "bin/mem-audit.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "memory",
+    "copilot",
+    "claude",
+    "audit",
+    "lint",
+    "docusor"
+  ],
+  "license": "Apache-2.0"
+}
