@@ -37,6 +37,9 @@ Mem-Audit reads that memory, resolves every file, symbol, script, env var and ve
 ## Quick start
 
 ```sh
+# install from npm registry
+npm install -g mem-audit
+
 # audit the repository in the current directory
 npx mem-audit
 
