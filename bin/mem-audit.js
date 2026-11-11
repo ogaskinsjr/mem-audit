@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runAudit, SOURCES } from "../src/index.js";
 import { VERDICTS } from "../src/classify.js";
 import { findOption, renderHelp, renderOptionHelp } from "../src/help.js";
-import { renderJson, renderText } from "../src/report.js";
+import { FINDING_FILES, OUT_FOLDERS, renderJson, renderOutputFiles, renderText } from "../src/report.js";
 
 const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
 
@@ -35,7 +35,7 @@ function handleHelp(argv) {
 
 function parseArgs(argv) {
   handleHelp(argv);
-  const o = { root: ".", related: [], files: [], exclude: [], agents: SOURCES, json: false, verbose: false, failOn: [], list: false, hint: true, noRepo: false, out: "mem-audit.json", vscodeUserDirs: undefined, claudeHome: undefined };
+  const o = { root: ".", related: [], files: [], exclude: [], agents: SOURCES, json: false, verbose: false, failOn: [], list: false, hint: true, noRepo: false, siblings: true, out: undefined, vscodeUserDirs: undefined, claudeHome: undefined };
   let rootSet = false;
   const value = (i, flag) => {
     if (i + 1 >= argv.length || argv[i + 1].startsWith("--")) usage(`${flag} needs a value`);
@@ -50,6 +50,7 @@ function parseArgs(argv) {
       case "--list": o.list = true; break;
       case "--no-hint": o.hint = false; break;
       case "--no-repo": o.noRepo = true; break;
+      case "--no-siblings": o.siblings = false; break;
       case "--out": o.out = value(i, a); i++; break;
       case "--no-out": o.out = null; break;
       case "--file": o.files.push(value(i, a)); i++; break;
@@ -88,23 +89,36 @@ function parseArgs(argv) {
   for (const d of [o.root, ...o.related]) {
     if (!fs.existsSync(d) || !fs.statSync(d).isDirectory()) usage(`not a directory: ${d}`);
   }
+  if (o.out === undefined) o.out = path.join(o.root, "mem-audit");
   return o;
 }
 
 const opts = parseArgs(process.argv.slice(2));
-const outPath = opts.out ? path.resolve(opts.out) : null;
-const result = runAudit({ ...opts, ignore: outPath ? [outPath] : [] });
+const outDir = opts.out ? path.resolve(opts.out) : null;
+const result = runAudit({ ...opts, ignore: outDir ? [outDir] : [] });
 
 if (opts.list) {
   if (opts.json) process.stdout.write(`${JSON.stringify(result.files.map(({ label, path: p, source, scope }) => ({ label, path: p, source, scope })), null, 2)}\n`);
   else for (const f of result.files) process.stdout.write(`${f.label}\t${f.path}\n`);
 } else {
-  const json = renderJson(result, { version: pkg.version });
-  if (outPath) {
-    fs.mkdirSync(path.dirname(outPath), { recursive: true });
-    fs.writeFileSync(outPath, `${json}\n`);
+  if (outDir) {
+    const files = renderOutputFiles(result, { version: pkg.version });
+    const folders = Object.keys(OUT_FOLDERS);
+    for (const d of folders) fs.mkdirSync(path.join(outDir, d), { recursive: true });
+    // Verdict files an earlier run left (count now 0, or the old flat layout); nothing else is touched.
+    for (const d of ["", ...folders]) {
+      for (const f of fs.readdirSync(path.join(outDir, d))) {
+        const name = f.slice(0, -5);
+        const known = f.endsWith(".json") && (VERDICTS.includes(name) || FINDING_FILES.includes(name));
+        if (known && !((d ? `${d}/${f}` : f) in files)) fs.rmSync(path.join(outDir, d, f));
+      }
+    }
+    for (const [name, json] of Object.entries(files)) fs.writeFileSync(path.join(outDir, name), `${json}\n`);
+    // Keeps the folder out of git without editing the repo's own .gitignore.
+    fs.writeFileSync(path.join(outDir, ".gitignore"), "*\n");
   }
-  const shownOut = outPath && path.relative(process.cwd(), outPath);
+  const json = renderJson(result, { version: pkg.version });
+  const shownOut = outDir && `${path.relative(process.cwd(), outDir) || "."}/`;
   process.stdout.write(`${opts.json ? json : renderText(result, { verbose: opts.verbose, hint: opts.hint, version: pkg.version, outPath: shownOut })}\n`);
   // exitCode (not exit()) so piped stdout is fully flushed.
   process.exitCode = opts.failOn.some((v) => result.summary.counts[v]) ? 1 : 0;

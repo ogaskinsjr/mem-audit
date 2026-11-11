@@ -1,7 +1,7 @@
 {
   "name": "mem-audit",
   "author": "Omari Gaskins Jr - DocuSOR",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Mem-Audit by DocuSOR: audit AI coding-agent memory against the real repo and against itself. Finds stale, contradictory and superseded notes, and what doesn't need to be agent memory at all. Offline, deterministic, zero dependencies.",
   "type": "module",
   "repository": {
@@ -25,7 +25,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "score": "node scripts/score.mjs"
   },
   "keywords": [
     "ai",
@@ -35,7 +36,7 @@
     "claude",
     "audit",
     "lint",
-    "docusor",    
+    "docusor",
     "context",
     "coding",
     "agent",

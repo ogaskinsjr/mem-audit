@@ -1,18 +1,13 @@
-// Extracts what a memory entry points at: repo paths, env vars, routes, npm
-// scripts, code symbols, CLI flags, personal (home/tmp) paths and ports.
-
-// Paths that belong to one person's machine, not to the repo.
 export const LOCAL_ABS_RE = /^(?:~(?:\/|$)|\/(?:Users|home)\/[^/\s]+(?:\/|$)|\/(?:private\/)?tmp\/|\/(?:private\/)?var\/folders\/|[A-Za-z]:[\\/]Users[\\/])/;
-// System / in-container absolute paths (/app, /workspace, /usr/local/bin…) are neither repo nor personal.
 const SYSTEM_ABS_RE = /^\/(?:var|etc|usr|opt|bin|sbin|dev|proc|sys|run|lib|app|workspace|data|srv|root|mnt|Volumes|Library|System|Applications)(?:\/|$)/;
 
-const CODE_EXT = "ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|rb|java|kt|sql|prisma|sh|bash|zsh|yml|yaml|json|toml|md|mdx|css|scss|html|vue|svelte|php|cs|swift|proto|graphql|gql|tf|ini|cfg|conf|env|pem";
+const CODE_EXT = "ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|rb|java|kt|sql|prisma|sh|bash|zsh|yml|yaml|json|toml|md|mdx|css|scss|html|vue|svelte|php|cs|swift|proto|graphql|gql|tf|ini|cfg|conf|env|pem|txt|xml";
 export const EXT_RE = new RegExp(`\\.(?:${CODE_EXT})$`, "i");
 const NAMED_FILES = new Set([
   "Dockerfile", "Makefile", "Caddyfile", "Procfile", "Jenkinsfile", "Gemfile", "Rakefile", "Justfile", "justfile",
   ".gitignore", ".dockerignore", ".env", ".env.local", ".env.example", ".env.sample", ".env.template", ".npmrc", ".nvmrc", ".editorconfig",
 ]);
-// Product/brand names that look like camelCase identifiers.
+
 const STOP_SYMBOLS = new Set([
   "jQuery", "iPhone", "iPad", "iCloud", "eBay", "macOS", "iOS", "iPadOS", "gRPC", "JavaScript", "TypeScript", "GitHub",
   "GitLab", "PostgreSQL", "MySQL", "MongoDB", "OAuth", "OpenAI", "OpenAPI", "GraphQL", "WebSocket", "NodeJS", "VSCode",
@@ -26,8 +21,8 @@ const SCRIPT_SKIP = new Set([
   "why", "view", "info", "run",
 ]);
 const HTTP = "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS";
-// Bare directory paths are only trusted under conventional source roots ("src/scm/", not "read/write").
 const SOURCE_DIR_RE = /^(?:src|lib|app|apps|packages|test|tests|scripts|prisma|internal|cmd|web|server|client)\/(?:[\w.-]+\/)+$/;
+const DIR_RE = /^\.?[\w@][\w.@-]*\/$/;
 
 export function normPath(p) {
   return p
@@ -50,9 +45,7 @@ function isPathLike(t, ticked) {
     return ticked && /^[\w.@-]+(?:\/[\w.@<>{}*-]+)+\/?$/.test(t);
   }
   if (NAMED_FILES.has(t)) return true;
-  // ".json" / ".contract.json" name a file type, not a file.
   if (/^\.[a-z0-9]+(?:\.[a-z0-9]+)*$/i.test(t)) return false;
-  // "Node.js"/"Next.js" are product names, not files.
   return EXT_RE.test(t) && /^[\w.@-]+$/.test(t) && !/^[A-Z][a-z]+\.js$/.test(t);
 }
 
@@ -80,6 +73,13 @@ function classifyToken(raw, add, ticked) {
     for (const w of t.split(/\s+/)) classifyToken(w, add, false);
     return;
   }
+  
+  const set = t.match(/^([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)=(.*)$/);
+  if (set) {
+    add("env", set[1]);
+    if (set[2]) classifyToken(set[2], add, false);
+    return;
+  }
   if (/^[a-z][\w+.-]*:\/\//i.test(t)) {
     try {
       const u = new URL(t);
@@ -99,6 +99,7 @@ function classifyToken(raw, add, ticked) {
   if (/^--[a-z][\w-]+/.test(t)) { add("flag", t.split("=")[0]); return; }
   if (/^\/[\w\-/:{}.<>*]+$/.test(t)) { addRoute(add, t); return; }
   if (/^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/.test(t)) { add("env", t); return; }
+  if (DIR_RE.test(t)) { add("dir", t.slice(0, -1)); return; }
   if (isPathLike(t, ticked)) { add("path", normPath(t)); return; }
   const call = t.match(/^(?:[A-Za-z_$][\w$]*\.)*([A-Za-z_$][\w$]*)\(/);
   if (call) {
@@ -107,7 +108,7 @@ function classifyToken(raw, add, ticked) {
   }
   if (!ticked) {
     if (isCamel(t) && /^[a-z]/.test(t) && t.length >= 8) add("symbol", t);
-    // Unticked snake_case is as often a DB name or a library's error code as our own symbol.
+    
     else if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(t) && t.length >= 8) add("identifier", t);
     return;
   }
@@ -125,8 +126,7 @@ export function extractAnchors(text) {
     seen.add(k);
     out.push({ kind, value });
   };
-
-  // Fenced code is scanned like prose: its delimiters are dropped, its content kept.
+  
   const body = text.replace(/^\s*(```+|~~~+)[^\n]*$/gm, " ");
   for (const m of body.matchAll(/`([^`\n]+)`/g)) classifyToken(m[1], add, true);
 
@@ -138,10 +138,12 @@ export function extractAnchors(text) {
   for (const m of bare.matchAll(new RegExp(`\\b(?:${HTTP})\\s+(\\/[\\w\\-/:{}.]*)`, "g"))) addRoute(add, m[1]);
   for (const m of bare.matchAll(/\b([A-Za-z_$][\w$]*)\(\)/g)) classifyToken(`${m[1]}()`, add, false);
 
-  for (const tok of bare.split(/[\s,;()"'“”<>|*]+/)) {
+  for (const raw of bare.split(/[\s,;()"'“”<>|*]+/)) {
+    
+    const tok = raw.replace(/[.:!?]+$/, "");
     if (!tok) continue;
-    // "emitServe/BILLABLE_TOOLS" lists alternatives, it isn't a path.
     if (tok.includes("/") && !/^[~./]|:\/\//.test(tok) && !isPathLike(tok, false)) {
+      if (DIR_RE.test(tok)) add("dir", tok.slice(0, -1));
       for (const part of tok.split("/")) if (part) bareToken(part, add);
       continue;
     }
