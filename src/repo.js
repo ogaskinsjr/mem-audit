@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { idWords } from "./facts.js";
 
 const SKIP_DIRS = new Set([
   "node_modules", ".git", "dist", "build", "out", ".next", ".nuxt", "coverage", ".turbo", ".cache", "vendor", "target",
@@ -14,6 +15,9 @@ const LOCKFILES = new Set([
 const MAX_BYTES = 1_000_000;
 const MAX_WALK = 50_000;
 const SEP = "\n\u0000\n";
+// `name = 5`, `name: 5`, `name := 5`, `"name": 5`, `KEY=5`, yaml/toml keys; literal values only,
+// including products of plain numbers (`72 * 3_600_000`).
+const ASSIGN_RE = /(["']?)([A-Za-z_$][\w$.-]*)\1\s*(?::=|:(?!:)|=(?![=>]))\s*(-?\d[\d_]*(?:\.\d+)?(?:\s*\*\s*\d[\d_]*(?:\.\d+)?)*|"[^"\n]*"|'[^'\n]*'|true|false)(?=\s*(?:[,;)}\]]|#|\/\/|$))/g;
 
 function gitFiles(root) {
   try {
@@ -69,9 +73,10 @@ function collectEnvDefaults(text, file, map, repo) {
 export function indexRepo(rootArg, ignore = []) {
   const root = fs.realpathSync(path.resolve(rootArg));
   const name = path.basename(root);
-  // A previous audit's JSON quotes memory verbatim; indexing it would make every anchor "resolve".
-  const skip = new Set(ignore.map((p) => path.relative(root, path.resolve(p)).split(path.sep).join("/")));
-  const fileList = listFiles(root).filter((f) => !skip.has(f) && path.posix.basename(f) !== "mem-audit.json");
+  // A previous audit quotes memory verbatim; indexing it would make every anchor "resolve".
+  const skip = ignore.map((p) => path.relative(root, path.resolve(p)).split(path.sep).join("/"));
+  const skipped = (f) => skip.some((s) => f === s || f.startsWith(`${s}/`)) || path.posix.basename(f) === "mem-audit.json";
+  const fileList = listFiles(root).filter((f) => !skipped(f));
   const files = new Set(fileList);
   const dirs = new Set();
   const topDirs = new Set();
@@ -81,6 +86,8 @@ export function indexRepo(rootArg, ignore = []) {
   const envDefaults = new Map();
   const code = [];
   const all = [];
+  const codeFiles = [];
+  const assignments = [];
   let hasPackageJson = false;
 
   for (const f of fileList) {
@@ -104,7 +111,22 @@ export function indexRepo(rootArg, ignore = []) {
     // Docs and migration history still mention removed things; "is it in the code" must ignore them.
     const isDoc = /\.(md|mdx|txt|rst|adoc)$/i.test(f) || /(^|\/)CHANGELOG/i.test(f);
     const isHistory = /(^|\/)migrations?\//i.test(f);
-    if (!isDoc && !isHistory) code.push(text);
+    if (!isDoc && !isHistory) {
+      code.push(text);
+      const lines = text.split(/\r?\n/);
+      codeFiles.push({ file: f, lines });
+      lines.forEach((line, i) => {
+        for (const m of line.matchAll(ASSIGN_RE)) {
+          const at = `${f}:${i + 1}`;
+          if (m[3].includes("*")) {
+            const product = m[3].split("*").reduce((p, x) => p * Number(x.replace(/_/g, "").trim()), 1);
+            assignments.push({ id: m[2], words: idWords(m[2]), value: String(product), expr: m[3].replace(/\s+/g, " "), at });
+          } else {
+            assignments.push({ id: m[2], words: idWords(m[2]), value: m[3].replace(/^["']|["']$/g, ""), at });
+          }
+        }
+      });
+    }
 
     if (base === "package.json") {
       hasPackageJson = true;
@@ -117,10 +139,23 @@ export function indexRepo(rootArg, ignore = []) {
     if (!isDoc) collectEnvDefaults(text, f, envDefaults, name);
   }
 
-  return { name, root, files, dirs, topDirs, basenames, scripts, versions, envDefaults, hasPackageJson, code: code.join(SEP), all: all.join(SEP) };
+  return { name, root, files, dirs, topDirs, basenames, scripts, versions, envDefaults, hasPackageJson, code: code.join(SEP), all: all.join(SEP), codeFiles, assignments };
 }
 
 const WORD_CHAR = /[A-Za-z0-9_$]/;
+
+// Last commit in any branch that touched this path (or added/removed this text); null when git has no record.
+export function gitHistory(root, a) {
+  const args = a.kind === "path" || a.kind === "local-path"
+    ? ["log", "--all", "-n1", "--format=%h", "--", `:(glob)**/${a.value.replace(/^\.\//, "")}`]
+    : ["log", "--all", "-n1", "--format=%h", `-S${a.value}`];
+  try {
+    const out = execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 15000 }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
 
 // Whole-word occurrence (no regex per token: indexOf over the joined corpus is fast).
 export function hasWord(blob, token) {
